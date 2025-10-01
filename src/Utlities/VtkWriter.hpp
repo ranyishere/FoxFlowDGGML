@@ -161,18 +161,18 @@ class VtkFileWriterComplete : public FileWriter<DataType> {
         }
 
         // Set the extra_point_data
-    /**
-     * For example if you want:
-     * std::vector<double> check;
-            for (unsigned int i=0; i < points.size()/3; i++) {
-                check.push_back(i);
-            }
+        /**
+         * For example if you want:
+         * std::vector<double> check;
+                for (unsigned int i=0; i < points.size()/3; i++) {
+                    check.push_back(i);
+                }
 
-            std::pair<std::string, std::vector<double>> my_oof = std::make_pair("check", check);
-            std::vector<std::pair<std::string, std::vector<double>> > oof;
-            oof.push_back(my_oof);
-            this->set_extra_point_data( oof);
-     */
+                std::pair<std::string, std::vector<double>> my_oof = std::make_pair("check", check);
+                std::vector<std::pair<std::string, std::vector<double>> > oof;
+                oof.push_back(my_oof);
+                this->set_extra_point_data( oof);
+         */
         void set_extra_point_data(const std::vector<std::pair<std::string, std::vector<double>> >& data) {
             extra_point_data = data;
         }
