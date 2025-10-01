@@ -154,13 +154,7 @@ class VtkFileWriterComplete : public FileWriter<DataType> {
     using data_type = typename FileWriter<DataType>::data_type;
     std::vector<std::pair<std::string, std::vector<double>>> extra_point_data;
 
-    protected:
-
-        std::vector<std::pair<std::string, std::vector<double>>> &get_extra_point_data() {
-            return extra_point_data;
-        }
-
-        // Set the extra_point_data
+    // Set the extra_point_data
         /**
          * For example if you want:
          * std::vector<double> check;
@@ -173,10 +167,18 @@ class VtkFileWriterComplete : public FileWriter<DataType> {
                 oof.push_back(my_oof);
                 this->set_extra_point_data( oof);
          */
+    public:
         void set_extra_point_data(const std::vector<std::pair<std::string, std::vector<double>> >& data) {
             extra_point_data = data;
         }
 
+    protected:
+
+        std::vector<std::pair<std::string, std::vector<double>>> &get_extra_point_data() {
+            return extra_point_data;
+        }
+
+        
         void create_file() const override {
             //std::cout << "File is created when written\n";
         }
