@@ -1,2 +1,8 @@
 add_subdirectory(CMA)
+add_subdirectory(Grid3D)
+add_subdirectory(ParallelGrid3D)
+add_subdirectory(ParallelParticleSwarm)
+add_subdirectory(ParallelParticleSwarmODE)
+add_subdirectory(ParallelWalkingGraph)
+add_subdirectory(EveryLBM)
 #add_subdirectory(Particle)
