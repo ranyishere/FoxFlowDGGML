@@ -44,12 +44,13 @@ namespace DGGML
                 auto approx_epsilon_y = ( dy ) / m_r_c;
                 auto n_r = n_r_c * n;
                 auto m_r = m_r_c * m;
-                //std::cout << "approx_epsilon_x: " << approx_epsilon_x << ", approx_epsilon_y: " << approx_epsilon_y << ", epsilon: " << epsilon << "\n";
+
                 reaction_grid.init(0.0, 0.0, n*d_x, m*d_y, n_r, m_r);
                 dim_label.resize(reaction_grid.totalNumCells());
                 cell_label.resize(reaction_grid.totalNumCells());
                 std::fill(dim_label.begin(), dim_label.end(), 0);
                 build();
+
            }
            
            //TODO: is this overload the right fix?
@@ -214,9 +215,6 @@ namespace DGGML
                 int min_i, min_j, max_i, max_j;
                 reaction_grid.locatePoint(ll_x, ll_y, min_i, min_j);
                 reaction_grid.locatePoint(ur_x, ur_y, max_i, max_j);
-                //if(min_i > max_i) std::swap(min_i, max_i);
-                //if(min_j > min_i) std::swap(max_i, max_j);
-                //std::cout << min_i << " " << min_j << " " << max_i << " " << max_j << "\n";
                 for(auto i = min_i; i <= max_i; i++)
                 {
                     for(auto j = min_j; j <= max_j; j++)
