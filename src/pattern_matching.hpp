@@ -30,6 +30,7 @@
 //}
 /* terminate early */
 namespace DGGML {
+
     // This is a recursive backtracking function, and it is memory efficient because it does a DFS (inorder traversal)
     // so only one vector is need for finding the result
     // TODO: Check for bugs patterns > 2, currently some permutations may not be picked up correctly
@@ -59,6 +60,8 @@ namespace DGGML {
                 inst.name = name;
                 if(auto search = sim.grammar_analysis.with_rules.find(name); search != sim.grammar_analysis.with_rules.end())
                     inst.category = "stochastic";
+                else if(sim.grammar_analysis.every_rules.find(name) != sim.grammar_analysis.every_rules.end())
+                    inst.category = "every";
                 else
                     inst.category = "deterministic";
                 inst.components = result;
@@ -67,11 +70,11 @@ namespace DGGML {
         } else {
             //we search in all nearby cells as candidates for the next element in the pattern
             int imin, imax, jmin, jmax;
-            sim.cell_list.getCells(c, imin, imax, jmin, jmax);
+            sim.cell_list->getCells(c, imin, imax, jmin, jmax);
             for (auto i = imin; i < imax; i++) {
                 for (auto j = jmin; j < jmax; j++) {
-                    auto nbr_idx = sim.cell_list.cardinalCellIndex(i, j);
-                    for (const auto &m2: sim.cell_list.data[nbr_idx]) {
+                    auto nbr_idx = sim.cell_list->cardinalCellIndex(i, j);
+                    for (const auto &m2: sim.cell_list->data[nbr_idx]) {
                         bool found = false;
                         for (auto v = 0; v < k; v++) {
                             if (result[v] == m2) found = true;
@@ -142,6 +145,8 @@ namespace DGGML {
                 inst.name = name;
                 if(auto search = grammar_analysis.with_rules.find(name); search != grammar_analysis.with_rules.end())
                     inst.category = "stochastic";
+                else if(grammar_analysis.every_rules.find(name) != grammar_analysis.every_rules.end())
+                    inst.category = "every";
                 else
                     inst.category = "deterministic";
                 inst.components = result;

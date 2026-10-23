@@ -7,6 +7,7 @@
 #include "Utlities/FileWriter.hpp"
 
 #include "CartesianGrid2D.hpp"
+#include "CartesianGrid3D.hpp"
 
 #include "vtu11/vtu11.hpp"
 
@@ -144,15 +145,16 @@ class VtkFileWriter : public FileWriter<DataType> {
         //std::vector<vtu11::DataSetInfo> dataSetInfo;
 };
 
-/**
- * VTKFileWriter that gets the node attributes also 
- * TODO: Test adding new column to paraview.
- */
 template <typename DataType>
 class VtkFileWriterComplete : public FileWriter<DataType> {
 
     using data_type = typename FileWriter<DataType>::data_type;
     std::vector<std::pair<std::string, std::vector<double>>> extra_point_data;
+
+    public:
+        void set_extra_point_data(const std::vector<std::pair<std::string, std::vector<double>> >& data) {
+            extra_point_data = data;
+        }
 
     protected:
 
@@ -173,9 +175,6 @@ class VtkFileWriterComplete : public FileWriter<DataType> {
                 oof.push_back(my_oof);
                 this->set_extra_point_data( oof);
          */
-        void set_extra_point_data(const std::vector<std::pair<std::string, std::vector<double>> >& data) {
-            extra_point_data = data;
-        }
 
         void create_file() const override {
             //std::cout << "File is created when written\n";
@@ -255,8 +254,7 @@ class VtkFileWriterComplete : public FileWriter<DataType> {
                     std::cerr << "Warning: Data array '" << arr.first << "' size mismatch with number of points!\n";
                     continue; // skip invalid arrays
                 }
-
-                std::cout << "adding" << std::endl;
+                // std::cout << "adding" << std::endl;
                 dataSetInfo.push_back({arr.first, vtu11::DataSetType::PointData, 1});
                 point_arrays.push_back(arr.second);
                 // exit(0);
@@ -299,6 +297,7 @@ class VtkFileWriterComplete : public FileWriter<DataType> {
 //Overides the file_writer interface, but preserves the algorithm
 class GridFileWriter : public FileWriter<std::pair<CartesianGrid2D, std::vector<int>>> {
     using data_type = typename FileWriter<std::pair<CartesianGrid2D, std::vector<int>>>::data_type;
+
     protected:
         void create_file() const override {
             //std::cout << "File is created when written\n";
@@ -357,15 +356,18 @@ class GridFileWriter : public FileWriter<std::pair<CartesianGrid2D, std::vector<
         }
 
         void write_file(std::string name) override {
+
             name += ".vtu";
             std::cout << "Writing data to " << name << "\n";
-            
+
             std::vector<vtu11::DataSetInfo> dataSetInfo
             {
                 {"Geocell", vtu11::DataSetType::CellData, 1},
             };
+
             vtu11::Vtu11UnstructuredMesh mesh {points, connectivity, offsets, types};
             vtu11::writeVtu(name, mesh, dataSetInfo, {cellData}, "Ascii");
+
         }
 
         void close_file() override {
@@ -388,6 +390,132 @@ class GridFileWriter : public FileWriter<std::pair<CartesianGrid2D, std::vector<
         std::vector<vtu11::VtkIndexType> connectivity;
         std::vector<double> cellData;
         //std::vector<vtu11::DataSetInfo> dataSetInfo;
+};
+
+// --- Add to VtkWriter.hpp (alongside other writers) ---
+
+// New VTKFileWriter for a 3D Cartesian Grid (Visualizes cells as Voxel volumes)
+class GridFileWriter3D : public FileWriter<std::pair<CartesianGrid3D, std::vector<int>>> {
+
+    using data_type = typename FileWriter<std::pair<CartesianGrid3D, std::vector<int>>>::data_type;
+
+    public:
+        // PUBLIC INTERFACE: Orchestrates the writing process
+        void write(std::string name, data_type data) 
+        {
+            this->format_data(data);
+            this->write_file(name);
+            this->close_file();
+        }
+
+    protected:
+
+        void create_file() const override {
+            //std::cout << "File is created when written\n";
+        }
+
+        void open_file() const override {
+            //std::cout << "Current file writing does not support appending\n";
+        }
+
+        // 1. FORMAT DATA: Collects points, connectivity, and cell data
+        void format_data(data_type _data) {
+
+            auto data = _data.first;// The CartesianGrid3D object
+            auto labels = _data.second;// The cell labels/data (e.g., dimension label)
+
+            auto nx = data._nx;
+            auto ny = data._ny;
+            auto nz = data._nz;
+            
+            // Clear any previous data (crucial if the writer object is reused)
+            points.clear();
+            types.clear();
+            offsets.clear();
+            connectivity.clear();
+            cellData.clear();
+            
+            // Collect all lattice points (Vertices)
+            for(auto i = 0; i < data.totalNumPoints(); i++)
+            {
+                // std::cout << "Adding point index: " << i << "\n";
+                // std::cout << "(" << xp << ", " << yp << ", " << zp << ")\n";
+                double xp, yp, zp;
+                data.cardinalLatticeToPoint(xp, yp, zp, i); 
+
+
+                points.push_back(xp);
+                points.push_back(yp);
+                points.push_back(zp);
+            }
+
+            // Define the Voxel connectivity (Cells)
+            std::size_t cell_count = 0;
+            for(auto k = 0; k < nz; k++)
+            {
+                for(auto j = 0; j < ny; j++)
+                {
+                    for(auto i = 0; i < nx; i++)
+                    {
+                        // The 8 vertices of a Voxel (VTK type 11) must be added in VTK-specific order.
+                        // Point indices are determined by the cardinal lattice index.
+
+                        // Base layer (z=k)
+                        connectivity.push_back(data.cardinalLatticeIndex(i, j, k));     // 0: (i, j, k)
+                        connectivity.push_back(data.cardinalLatticeIndex(i+1, j, k));   // 1: (i+1, j, k)
+                        connectivity.push_back(data.cardinalLatticeIndex(i, j+1, k));   // 2: (i, j+1, k)
+                        connectivity.push_back(data.cardinalLatticeIndex(i+1, j+1, k)); // 3: (i+1, j+1, k)
+
+                        // Top layer (z=k+1)
+                        connectivity.push_back(data.cardinalLatticeIndex(i, j, k+1));   // 4: (i, j, k+1)
+                        connectivity.push_back(data.cardinalLatticeIndex(i+1, j, k+1)); // 5: (i+1, j, k+1)
+                        connectivity.push_back(data.cardinalLatticeIndex(i, j+1, k+1)); // 6: (i, j+1, k+1)
+                        connectivity.push_back(data.cardinalLatticeIndex(i+1, j+1, k+1)); // 7: (i+1, j+1, k+1)
+
+
+                        // Define Offsets and Types
+                        offsets.push_back(offsets.empty() ? 8 : offsets.back() + 8);
+                        types.push_back(11); // VTK_VOXEL
+
+                        cellData.push_back(labels[cell_count]);
+                                               
+                        cell_count++;
+                    }
+
+                }
+            }
+        }
+
+        // 2. WRITE FILE: Performs the disk operation
+        void write_file(std::string name) override {
+            name += ".vtu";
+            std::cout << "Writing 3D Grid Voxel data to " << name << "\n";
+            
+            // Note: The Voxel definition order above (0, 1, 3, 2, 4, 5, 7, 6) is the standard VTK order.
+            std::vector<vtu11::DataSetInfo> dataSetInfo
+            {
+                {"Geocell", vtu11::DataSetType::CellData, 1},
+            };
+            vtu11::Vtu11UnstructuredMesh mesh {points, connectivity, offsets, types};
+            vtu11::writeVtu(name, mesh, dataSetInfo, {cellData}, "Ascii");
+        }
+
+        // 3. CLOSE FILE: Cleans up internal buffers
+        void close_file() override {
+            points.clear();
+            types.clear();
+            offsets.clear();
+            connectivity.clear();
+            cellData.clear();
+        }
+
+    private:
+        // Internal data storage buffers (assuming they are not in the base FileWriter)
+        std::vector<double> points;
+        std::vector<vtu11::VtkCellType> types;
+        std::vector<vtu11::VtkIndexType> offsets;
+        std::vector<vtu11::VtkIndexType> connectivity;
+        std::vector<double> cellData;
 };
 
 } //end namespace DGGML

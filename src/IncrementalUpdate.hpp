@@ -38,6 +38,7 @@ namespace DGGML
     struct RewriteUpdates
     {
         std::set<std::size_t> node_removals, node_updates;
+
         using cmp = struct PairComparator {
             using pair_t = std::pair<std::size_t,std::size_t>;
             bool operator()(const pair_t& a, const pair_t& b) const {
@@ -56,8 +57,8 @@ namespace DGGML
                 }
             }
         };
-        std::set<std::pair<std::size_t, std::size_t>, PairComparator> edge_removals, edge_updates;
 
+        std::set<std::pair<std::size_t, std::size_t>, PairComparator> edge_removals, edge_updates;
         void print()
         {
             std::cout << "Nodes to invalidate: { ";
@@ -73,8 +74,32 @@ namespace DGGML
             for(auto& item : edge_updates) std::cout << "( " << item.first << ", " << item.second  << " ) ";
             std::cout << "}\n";
         }
+
+        std::vector<std::size_t> get_all_invalidated_nodes() {
+            return std::vector<std::size_t>(node_removals.begin(), node_removals.end());
+        }
+
+        std::vector<std::size_t> get_all_validated_nodes() {
+            return std::vector<std::size_t>(node_updates.begin(), node_updates.end());
+        }
+
+        std::vector<std::pair<std::size_t, std::size_t>> get_all_invalidated_edges() {
+            return std::vector<std::pair<std::size_t, std::size_t>>(edge_removals.begin(), edge_removals.end());
+        }
+
+        std::vector<std::pair<std::size_t, std::size_t>> get_all_validated_edges() {
+            return std::vector<std::pair<std::size_t, std::size_t>>(edge_updates.begin(), edge_updates.end());
+        }
+
+
     };
 
+
+    /**
+     *
+     * This function performs the invalidations and rewrites on the system graph based on a rule match instance.
+     * It updates the system graph, invalidates affected components and rules, and returns the changes made.
+     */
     template <typename GraphType, typename MatchType>
     std::pair<RewriteUpdates, Invalidations> perform_invalidations_and_rewrite(DGGML::RuleMatch<std::size_t>& inst,
                                                      MatchType& component_match_set,
@@ -122,6 +147,7 @@ namespace DGGML
 
         //TODO: Induced subgraph may include edges we didn't expect and create a rewrite error
         auto lhs_match = YAGL::induced_subgraph(system_graph, right);
+
         //TODO: potentially fix by searching the induced graph and removing edges not in the match
         auto lhs_match_copy = lhs_match;
         auto rhs_rule_copy = grammar_analysis.with_rules.at(rname).rhs_graph;
@@ -179,11 +205,12 @@ namespace DGGML
             }
         }
 
+
         //I think we actually need a map for the lhs, and the rhs
         grammar_analysis.with_rules.at(rname).update(lhs_match, lhs_match_copy, lhs_vertex_map, rhs_vertex_map); //h
 
-//        std::cout << "currently mapped rules: { ";
-//        for(auto& key : rule_map) std::cout << key << " "; std::cout << "}\n";
+        // std::cout << "currently mapped rules: { ";
+        // for(auto& key : rule_map) std::cout << key << " "; std::cout << "}\n";
 
         //TODO: need a better fix, currently here because the cell list uses the graph to find the anchor
         // for a component so that we can find its cell, but if the node has already been removed by a rewrite
@@ -191,6 +218,7 @@ namespace DGGML
         // of components to cells
         auto removals = perform_invalidations(changes, component_match_set, grammar_analysis,
                                               rule_matches, rule_map, cell_list, geocell_properties);
+
         //update the system graph
         for(auto& k : rewrite.node_set_destroy)
             system_graph.removeNode(system_graph.findNode(lhs_vertex_map[k])->second);
@@ -198,6 +226,7 @@ namespace DGGML
         for(auto& [u, v] : rewrite.edge_set_destroy)
             system_graph.removeEdge(lhs_vertex_map[u], lhs_vertex_map[v]);
 
+        // Updates each node data in the system graph to match the rewritten subgraph
         for(auto& [k, v] : lhs_match_copy.getNodeSetRef())
         {
             auto res = system_graph.findNode(k);
@@ -301,6 +330,7 @@ namespace DGGML
                     rule_invalidations.insert(k);
                 }
             }
+
         }
 
         //we remove these now invalid rules
@@ -318,9 +348,9 @@ namespace DGGML
             //we also need to remove the invalid rules from the rule map
             rule_map.erase(std::find(rule_map.begin(), rule_map.end(), item));
         }
-        //std::cout << "Rule matches after erase: " << rule_matches.size() << "\n";
-        //std::cout << "Rule map after erase: " << rule_map.size() << "\n";
-        //return the list of boundary components invalidated
+        // std::cout << "Rule matches after erase: " << rule_matches.size() << "\n";
+        // std::cout << "Rule map after erase: " << rule_map.size() << "\n";
+        // return the list of boundary components invalidated
 
         return removals;
     }
@@ -365,11 +395,25 @@ namespace DGGML
         //search the candidate graph for components, the code below finds and validates in one loop
         std::vector<std::size_t> validated_components;
         //TODO: I think we need to store the ordering or the rooted spanning tree
+
+
+        /**
+         * Loop through all unique components and search for them in the candidate graph
+         */
         for(auto& [k, pattern] : grammar_analysis.unique_components) {
-            //need to actually get the ordering for the mapping
+
+            // Finds the matches of the pattern in the candidate graph
             auto matches = YAGL::subgraph_isomorphism2(pattern, candidate_graph);
             //std::cout << "Match sizes found for " << k << " " << matches.size() << "\n";
+
             if (!matches.empty()) {
+
+                //need to actually get the ordering for the mapping
+
+                // Gets the matches that are valid based on the changes
+                // A match is valid if it contains at least one node or edge that was changed
+                // This prevents us from adding duplicate components that were already present
+                // in the system graph
                 for (auto &m: matches) {
                     bool accepted = false;
                     for (auto& [v1, v2] : m) {
@@ -387,6 +431,8 @@ namespace DGGML
                                 inst.order = order;
                                 inst.type = k;
                                 inst.anchor = match[0];
+                                std::cout << "inserting" << std::endl;
+                                std::cin.get();
                                 auto res = component_matches.insert(inst);
                                 if (res.second)
                                     validated_components.push_back(res.first->first);
@@ -395,6 +441,7 @@ namespace DGGML
                         }
                         if (accepted) break;
                     }
+
                     if (accepted) continue;
                     for (auto& [v1, v2] : m) {
                         for (auto& [u1, u2] : m) {
@@ -426,6 +473,7 @@ namespace DGGML
                     if (accepted) continue;
                 }
             }
+
         }
 //        std::cout << "Validated components: { ";
 //        for(auto& item : validated_components)
@@ -466,6 +514,11 @@ namespace DGGML
                 }
             }
         }
+
+       std::cout << "Number of accepted reaction instances before: " << accepted_rule_matches.size() << "\n";
+       std::cout << std::endl;
+       std::cin.get();
+
         for(auto& cell : candidate_cells)
         {
             for(auto& item : cell_list.data[cell]) {
@@ -491,7 +544,9 @@ namespace DGGML
                 }
             }
         }
-//        std::cout << "Number of accepted reaction instances: " << accepted_rule_matches.size() << "\n";
+       std::cout << "Number of accepted reaction instances: " << accepted_rule_matches.size() << "\n";
+       std::cout << std::endl;
+       std::cin.get();
 
         //rule instances are only accepted if they contain the new components and phi maps them to the current cell
         //if phi maps them to a different cell, we may be able to add them to a separate future validations

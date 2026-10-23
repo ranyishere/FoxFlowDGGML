@@ -170,7 +170,6 @@ struct Histobucket
         }
     }
 
-
     count_type num_bins; // how many bins are there
     count_type* counts;  // how many items are in a bucket
     count_type* offsets; // offsets for binning
