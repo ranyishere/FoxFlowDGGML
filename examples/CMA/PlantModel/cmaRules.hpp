@@ -15,7 +15,7 @@ namespace CMA {
         return (x > min_x && x < max_x && y > min_y && y < max_y) ? false : true;
     }
 
-//checks if we're outside a circular boundary
+    //checks if we're outside a circular boundary
     bool boundary_check_circle(Parameters &settings, double x, double y) {
         double padding = 2.0 * settings.MAXIMAL_REACTION_RADIUS;
         double diameter = settings.CELL_NX * settings.CELL_DX - 2 * padding;
@@ -28,6 +28,7 @@ namespace CMA {
 
     void create_with_mt_growing_rule(DGGML::Grammar<Plant::graph_type> &gamma, Plant::graph_type &system_graph,
                               Parameters &settings) {
+
         //stochastic growing rule
         GT mt_growth_lhs;
         mt_growth_lhs.addNode({1, {Plant::Intermediate{}}});
@@ -40,7 +41,6 @@ namespace CMA {
         mt_growth_rhs.addNode({2, {Plant::Positive{}}});
         mt_growth_rhs.addEdge(1, 3);
         mt_growth_rhs.addEdge(3, 2);
-
 
         //TODO: I should make it so that any solving/propensity functions that need access to parameters
         // are actually passed as functors with states!
@@ -1439,10 +1439,12 @@ namespace CMA {
                                                z_c = 0;
                                                auto x_s = 0.0;
                                                auto y_s = seg_len;
+
                                                auto x_r_t = x_s * cos(theta) + y_s * sin(theta);
                                                auto y_r_t = -x_s * sin(theta) + y_s * cos(theta);
                                                auto x_r = x_c + x_r_t;
                                                auto y_r = y_c + y_r_t;
+
                                                auto z_r = 0.0;
                                                auto x_l = x_c - (x_r - x_c);
                                                auto y_l = y_c - (y_r - y_c);

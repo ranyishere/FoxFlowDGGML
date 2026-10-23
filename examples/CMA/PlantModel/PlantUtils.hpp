@@ -40,8 +40,10 @@ namespace CMA {
 namespace Plant {
     template<typename GraphType, typename CplexType, typename ParamType, typename GenType>
     void microtubule_uniform_scatter(GraphType &graph, CplexType &cplex, ParamType &settings, GenType &gen) {
+
         using node_type = typename GraphType::node_type;
         using key_type = typename node_type::key_type;
+
         double epsilon_min = settings.DIV_LENGTH;//settings.MT_MIN_SEGMENT_INIT;
         double epsilon_max = settings.DIV_LENGTH;//settings.MT_MAX_SEGMENT_INIT;
         std::random_device random_device;
@@ -225,6 +227,7 @@ namespace Plant {
             graph.addEdge(node_l, node_c);
             graph.addEdge(node_r, node_c);
         }
+
     }
 
 
