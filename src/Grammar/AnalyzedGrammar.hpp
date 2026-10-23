@@ -145,6 +145,7 @@ namespace DGGML
         std::map<std::string, WithRule<GraphType>> with_rules;
 
         std::map<std::string, SolvingRule<GraphType>> solving_rules;
+        std::map<std::string, EveryRule<GraphType>> every_rules;
         std::vector<std::string> rule_names;
         std::map<std::string, std::map<std::size_t, GraphType>> lhs_connected_components;
         std::map<std::string, Rewrite<GraphType>> with_rewrites;
@@ -168,6 +169,7 @@ namespace DGGML
             std::cout << "Creating the grammar data structure used for analysis\n";
             with_rules = grammar.stochastic_rules;
             solving_rules =grammar.deterministic_rules;
+            every_rules = grammar.every_rules;
 
             for(auto& item : with_rules)
             {
@@ -176,6 +178,12 @@ namespace DGGML
                 compute_and_store_connected_components(item.second.lhs_graph, lhs_connected_components[item.first]);
             }
             for(auto& item : solving_rules)
+            {
+                rule_names.emplace_back(item.first);
+                lhs_connected_components[item.first] = {};
+                compute_and_store_connected_components(item.second.lhs_graph, lhs_connected_components[item.first]);
+            }
+            for(auto& item : every_rules)
             {
                 rule_names.emplace_back(item.first);
                 lhs_connected_components[item.first] = {};

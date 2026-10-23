@@ -21,13 +21,8 @@ void construct_grammar_match_map(InstType& inst, GrammarAnalysisType& grammar_an
     for(auto i = 0; i < grammar_analysis.ccuv_mappings[inst.name].size(); i++)
     {
         auto& m = grammar_analysis.ccuv_mappings[inst.name][i];
-//        std::cout << "Begin: \n";
-//        auto print = [](auto& mm) { std::cout << "{";
-//            for(auto& [k, v] : mm)
-//                std::cout << "( " << k << " -> " << v << " ) ";
-//            std::cout << "}\n";};
-//        print(m);
         auto& c = inst.components[i];
+
         auto cid = component_match_set[c].type;
         auto& o = component_match_set[c].order;
         //auto& o = grammar_analysis.orderings[cid];
@@ -35,8 +30,12 @@ void construct_grammar_match_map(InstType& inst, GrammarAnalysisType& grammar_an
         for(int j = 0; j < o.size(); j++)
             ro[o[j]] = j;
 //        print(ro);
-        for(auto& [k, v] : m)
+        for(auto& [k, v] : m) {
+            // Checking sizes
+            // checking lhs_vertex_map by looping through keys and values
             lhs_vertex_map[k] = component_match_set[c].match[ro[v]];
+        }
+
 //        print(lhs_vertex_map);
 //        for(auto& item : component_match_set[c].match)
 //            std::cout << item << " ";

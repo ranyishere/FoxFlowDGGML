@@ -107,7 +107,10 @@ namespace DGGML
         {
             return matches[k];
         }
-        
+
+        data_type& at(key_type k) { return matches.at(k); }
+        const data_type& at(key_type k) const { return matches.at(k); }
+
         //perhaps these should be over the index not the match container?
         iterator begin() { return matches.begin(); }
         iterator end() { return matches.end(); }

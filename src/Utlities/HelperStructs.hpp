@@ -2,6 +2,7 @@
 #define DGGML_HELPERSTRUCTS_HPP
 
 #include <map>
+#include <string>
 
 #include "RuleMatchMap.hpp"
 
@@ -13,16 +14,25 @@ namespace DGGML {
         std::size_t cell_id;
         RuleMatch<NodeKeyType> rule_match;
     };
+
     template <typename NodeKeyType>
     struct GeocellProperties {
         double tau;
         double exp_sample;
         std::size_t current_rules_fired;
         std::size_t total_rules_fired;
+
+        // Shared physical clock: integral of dtau/dt = 1 
+        // (accumulated advanced time)
+        double clock_tau;
+
+        // per EveryRule: next scheduled fire time (physical clock)
+        std::map<std::string, double> every_next_fire;
+
         std::vector<CellMatchPair<NodeKeyType>> rejected_rule_matches;
         std::set<std::size_t> invalidated_components;
 
-        GeocellProperties() : tau(0.0), exp_sample(0.0), current_rules_fired(0), total_rules_fired(0) {}
+        GeocellProperties() : tau(0.0), exp_sample(0.0), current_rules_fired(0), total_rules_fired(0), clock_tau(0.0) {}
 
         void print()
         {

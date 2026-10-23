@@ -8,16 +8,22 @@
 #include "MathUtils.hpp"
 #include "simdjson.h"
 #include "ExpandedComplex2D.hpp"
+#include "ExpandedComplex3D.hpp"
 #include "YAGL_Algorithms.hpp"
 #include "Parameters.hpp"
 
+
 namespace CMA {
+
     using graph_grammar_t = DGGML::Grammar<Plant::graph_type>;
+
     class cmaModel : public DGGML::Model<graph_grammar_t> {
     public:
         void initialize() override
         {
+
             std::cout << "Initializing the plant model simulation\n";
+
             //settings.set_default();
             name = settings.EXPERIMENT_NAME;
             std::cout << "Creating the grammar\n";
@@ -79,16 +85,18 @@ namespace CMA {
             if(settings.ENABLE_RECOVERY)
                 create_with_recovery_rule(gamma, system_graph, settings);
 
-            std::cout << "Generating the expanded cell complex\n";
+            atd::cout << "Generating the expanded cell complex\n";
             geoplex2D.init(settings.CELL_NX,
                            settings.CELL_NY,
                            settings.CELL_DX,
                            settings.CELL_DY,
                            settings.GHOSTED,
                            settings.MAXIMAL_REACTION_RADIUS); //ghosted
-            //std::cout << geoplex2D;
+
+            // std::cout << geoplex2D;
             std::cout << "Initializing the system graph\n";
             Plant::microtubule_uniform_scatter(system_graph, geoplex2D, settings, gen);
+
         }
 
         struct MyMetrics {
@@ -219,6 +227,7 @@ namespace CMA {
                 // Save expanded cell complex graph
                 //DGGML::VtkFileWriter<typename DGGML::ExpandedComplex2D<>::types::graph_type> writer;
                 //writer.save(model->geoplex2D.getGraph(), results_dir_name+"/factory_geoplex");
+
                 DGGML::GridFileWriter grid_writer;
                 grid_writer.save({geoplex2D.reaction_grid,geoplex2D.dim_label},
                                  results_dir_name+"/expanded_cell_complex");
@@ -243,6 +252,7 @@ namespace CMA {
                 print_metrics(step);
             }
             //std::cin.get();
+
         }
 
         void set_parameters(simdjson::ondemand::document& interface)
@@ -252,6 +262,11 @@ namespace CMA {
 
         //TODO: separate core settings out into the base class
         Parameters settings;
+
+
+        void save_state() {
+        }
+
     };
 }
 

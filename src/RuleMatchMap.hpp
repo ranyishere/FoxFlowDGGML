@@ -34,7 +34,6 @@ namespace DGGML
         gen_type key_gen;
 
         //default constructor
-
         auto insert(data_type match)
         {
             //generate a new key and add the match
@@ -56,6 +55,9 @@ namespace DGGML
         {
             return matches[k];
         }
+
+        data_type& at(key_type k) { return matches.at(k); }
+        const data_type& at(key_type k) const { return matches.at(k); }
 
         //perhaps these should be over the index not the match container?
         iterator begin() { return matches.begin(); }
