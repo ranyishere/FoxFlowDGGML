@@ -1,3 +1,7 @@
 [submodule "dependencies/YAGL"]
 	path = dependencies/YAGL
 	url = git@github.com:ranyishere/YAGL.git
+
+[submodule "dependencies/YAGLParallel"]
+	path = dependencies/YAGLParallel
+	url = git@github.com:ranyishere/YAGLParallel.git
