@@ -15,6 +15,7 @@ add_executable(incremental-updates-test incremental-updates-test.cpp tests_main.
 add_executable(cell-list-test cell-list-test.cpp tests_main.cpp)
 add_executable(grammar-test grammar-test.cpp tests_main.cpp)
 add_executable(phi-function-test tests_main.cpp phi-function-test.cpp)
+add_executable(fem-operator-group-test tests_main.cpp fem-operator-group-test.cpp)
 
 target_link_libraries(file-writer-test PRIVATE vtu11::vtu11 PUBLIC SUNDIALS::arkode SUNDIALS::nvecserial)
 target_link_libraries(cplex-test PRIVATE vtu11::vtu11 PUBLIC SUNDIALS::arkode SUNDIALS::nvecserial)
@@ -22,6 +23,7 @@ target_link_libraries(factory-test PRIVATE vtu11::vtu11 PUBLIC SUNDIALS::arkode 
 target_link_libraries(plant-matcher-test PRIVATE vtu11::vtu11 PUBLIC SUNDIALS::arkode SUNDIALS::nvecserial)
 target_link_libraries(binning-and-sort-test PRIVATE vtu11::vtu11 PUBLIC SUNDIALS::arkode SUNDIALS::nvecserial)
 target_link_libraries(sundials-test PUBLIC SUNDIALS::arkode SUNDIALS::nvecserial)
+target_link_libraries(fem-operator-group-test PUBLIC SUNDIALS::arkode SUNDIALS::nvecserial)
 target_link_libraries(grid-test PRIVATE vtu11::vtu11)
 target_link_libraries(incremental-updates-test PRIVATE vtu11::vtu11)
 target_link_libraries(phi-function-test PRIVATE vtu11::vtu11)

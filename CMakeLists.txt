@@ -60,6 +60,35 @@ if(NOT SUNDIALS_FOUND)
     FetchContent_MakeAvailable(sundials)
 endif()
 
+# =============================================================================
+# MFEM Integration
+# =============================================================================
+find_package(mfem QUIET)
+
+if(NOT mfem_FOUND)
+    message(STATUS "MFEM not found, fetching with FetchContent...")
+    set(FETCHCONTENT_QUIET FALSE)
+    # Include FetchContent module (in case SUNDIALS was found locally and this wasn't called)
+    include(FetchContent)
+
+    message("Downloading MFEM, this may take a few minutes...")
+    FetchContent_Declare(
+            mfem
+            GIT_REPOSITORY https://github.com/mfem/mfem.git
+            GIT_TAG v4.7
+            GIT_PROGRESS TRUE
+    )
+
+    # Disable MFEM examples, miniapps, and tests so it builds much faster
+    set(MFEM_ENABLE_EXAMPLES OFF CACHE BOOL "Disable MFEM examples" FORCE)
+    set(MFEM_ENABLE_MINIAPPS OFF CACHE BOOL "Disable MFEM miniapps" FORCE)
+    set(MFEM_ENABLE_TESTING OFF CACHE BOOL "Disable MFEM testing" FORCE)
+
+    # Fetch and make available
+    FetchContent_MakeAvailable(mfem)
+endif()
+# =============================================================================
+
 # TODO: see if there is a better way than include_directories command
 include_directories(dependencies/YAGL/include)
 include_directories(thirdparty/simdjson)
