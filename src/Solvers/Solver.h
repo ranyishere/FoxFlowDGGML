@@ -1,7 +1,9 @@
 #ifndef DGGML_SOLVER_H
 #define DGGML_SOLVER_H
 
-#include <arkode/arkode_erkstep.h>
+#include <arkode/arkode_arkstep.h>
+#include <arkode/arkode_ls.h>
+#include <sunlinsol/sunlinsol_spgmr.h>
 #include <nvector/nvector_serial.h>
 #include <sundials/sundials_types.h>
 #include <sundials/sundials_math.h>
@@ -21,9 +23,12 @@ typedef double realtype;
 #include <vector>
 #include <variant>
 #include <map>
+#include <type_traits>
+#include <algorithm>
 
 #include "SundialsUtils.hpp"
 #include "HelperFunctions.hpp"
+#include "FemOperatorGroup.hpp"
 
 #include <stdio.h>
 
@@ -39,7 +44,51 @@ namespace DGGML {
         // For example, do nothing to effectively suppress the message
     }
 
-    template <typename ModelType, typename AnalyzedGrammarType, typename RuleMatchType, typename ComponentMatchType>
+    // Lets a model opt in to a spatial FEM operator for a given geocell. A model that defines
+    //     using fem_operator_type = MyOperator;
+    //     fem_operator_type* fem_operator(std::size_t geocell, bool has_solving_rules);
+    // gets that operator (or nullptr) attached to the solver created by approximate_ssa for that
+    // geocell. Models without these members get no FEM operator.
+    template <typename M, typename = void>
+    struct fem_operator_traits {
+        using type = void*;
+        static type get(M&, std::size_t, bool) { return nullptr; }
+    };
+
+    template <typename M>
+    struct fem_operator_traits<M, std::void_t<typename M::fem_operator_type>> {
+        using type = typename M::fem_operator_type*;
+        static type get(M& m, std::size_t k, bool has_rules) { return m.fem_operator(k, has_rules); }
+    };
+
+    // An FEM operator that also provides
+    //     void PrecSetup(double gamma);
+    //     void PrecSolve(const double* r, double* z, double gamma);
+    // is treated as a LINEAR, stiff term and integrated implicitly (ARKStep IMEX, matrix-free GMRES):
+    //   Jacobian-vector product = Mult applied to the vector (Mult must be linear in y),
+    //   PrecSetup(gamma) / PrecSolve(r, z, gamma): z = (I - gamma*J)^-1 r on the FEM segment
+    //   (r and z point at the operator's own ndofs values; the rest of the state is untouched).
+    // Operators without these members are integrated explicitly together with the grammar ODEs.
+    template <typename T, typename = void>
+    struct fem_operator_is_implicit : std::false_type {};
+
+    template <typename T>
+    struct fem_operator_is_implicit<T, std::void_t<decltype(
+        std::declval<std::remove_pointer_t<T>&>().PrecSolve(std::declval<const double*>(),
+                                                            std::declval<double*>(), 0.0))>>
+        : std::true_type {};
+
+    // FemOperatorType is an optional pointer to a spatial FEM operator (e.g. MFEM). When it is not
+    // void*, the operator must provide: ndofs, fem_offset, Mult(t, y, ydot), Load(y) and Sync(y).
+    //   Load(y): copy the operator's persistent field into y at fem_offset (called on construction).
+    //   Sync(y): copy the FEM segment of y back to the persistent field (copy_back and destructor).
+    // The solver is rebuilt for every SSA window, so the field must live in the operator.
+    // The state vector layout is [grammar vars | FEM dofs | tau]; the solver sets fem_offset.
+    // To host several operators in one solver, wrap them in DGGML::FemOperatorGroup<Op0, Op1, ...>
+    // (see FemOperatorGroup.hpp): the group is itself a single operator whose segment is the
+    // concatenation of its members' segments.
+    template <typename ModelType, typename AnalyzedGrammarType, typename RuleMatchType, typename ComponentMatchType,
+              typename FemOperatorType = void*>
     struct Solver
     {
         int flag; //generic reusable flag
@@ -47,6 +96,10 @@ namespace DGGML {
         //Create the suncontext
         SUNContext ctx;
         void* arkode_mem;
+        SUNLinearSolver LS = nullptr;   // matrix-free GMRES for the implicit FEM term (if any)
+
+        static constexpr bool imex_capable = fem_operator_is_implicit<FemOperatorType>::value;
+        bool use_imex = false;          // FEM term integrated implicitly (imex_capable && operator attached)
 
         realtype t_start, t_final, t, tout, dt_out;
 
@@ -82,25 +135,39 @@ namespace DGGML {
             double waiting_time;
             std::unordered_map<double*, std::size_t> varmap;
 
+            // Optional FEM operator for mesh-level PDE interaction
+            FemOperatorType fem_op;
+
             UserDataType(ModelType& model, AnalyzedGrammarType& grammar_analysis, std::vector<std::size_t>& solving_rules,
                          const typename RuleMatchType::container_type& rule_matches_snapshot,
                          ComponentMatchType& component_matches, std::size_t& k,
-                         double& geocell_propensity, double& tau, double waiting_time)
+                         double& geocell_propensity, double& tau, double waiting_time,
+                         FemOperatorType fem_op = nullptr)
                          : model(model), grammar_analysis(grammar_analysis), solving_rules(solving_rules),
                          rule_matches(rule_matches_snapshot), component_matches(component_matches),
-                         k(k), geocell_propensity(geocell_propensity), tau(tau), waiting_time(waiting_time) {}
+                         k(k), geocell_propensity(geocell_propensity), tau(tau), waiting_time(waiting_time),
+                         fem_op(fem_op) {}
         };
 
         UserDataType user_data; //TODO: should this be a pointer?
+
+        // Number of FEM degrees of freedom carried in the state vector (0 when no FEM operator)
+        sunindextype fem_dofs() const
+        {
+            if constexpr (!std::is_same_v<FemOperatorType, void*>) {
+                if (user_data.fem_op) return static_cast<sunindextype>(user_data.fem_op->ndofs);
+            }
+            return 0;
+        }
 
         //TODO: remember, the varset/varmap is only safe so long as the map doesn't change by another thread
         Solver(ModelType& model, AnalyzedGrammarType& grammar_analysis, std::vector<std::size_t> solving_rules,
                RuleMatchType& rule_matches,
                const typename RuleMatchType::container_type& rule_matches_snapshot,
                ComponentMatchType& component_matches, std::size_t& k, double& geocell_propensity,
-               double& tau, double waiting_time, sunindextype num_eq)
+               double& tau, double waiting_time, sunindextype num_eq, FemOperatorType fem_op = nullptr)
                 : user_data(model, grammar_analysis, solving_rules, rule_matches_snapshot, component_matches, k,
-                            geocell_propensity, tau, waiting_time), num_eq(num_eq)
+                            geocell_propensity, tau, waiting_time, fem_op), num_eq(num_eq)
         {
             global_nstep = 0;
             global_nfe = 0;
@@ -137,12 +204,14 @@ namespace DGGML {
                 ode.ic(user_data.model->system_graph, lhs_vertex_map, varset);
             }
 
-            num_eq = static_cast<sunindextype>(varset.size()) + 1; // +1 for tau
+            // grammar vars + FEM dofs + 1 for tau
+            num_eq = static_cast<sunindextype>(varset.size()) + fem_dofs() + 1;
 
             y = NULL;
             y = N_VNew_Serial(num_eq, ctx);
+            N_VConst(0.0, y);
 
-            NV_Ith_S(y, varset.size()) = user_data.tau;
+            NV_Ith_S(y, num_eq - 1) = user_data.tau;
 //            std::cout << "size of varset: " << varset.size() << "\n";
             std::size_t idx = 0;
             for(auto item : varset)
@@ -152,6 +221,14 @@ namespace DGGML {
                 idx++;
             }
             varset.clear();
+
+            // FEM segment sits right after the grammar variables; start from the operator's field
+            if constexpr (!std::is_same_v<FemOperatorType, void*>) {
+                if (user_data.fem_op) {
+                    user_data.fem_op->fem_offset = static_cast<int>(idx);
+                    user_data.fem_op->Load(y);
+                }
+            }
 
             // === ODE SOLVER DUMP: one-time per-geocell snapshot ===
             // Set ODE_DUMP=1 to enable
@@ -209,27 +286,72 @@ namespace DGGML {
                 }
             }
 
-            arkode_mem = ERKStepCreate(rhs, t_start, y, ctx);
+            if constexpr (imex_capable)
+                use_imex = (user_data.fem_op != nullptr);
 
-            reltol = 1.0e-4;
-            abstol = 1.0e-6;  // loosened from 1.0e-8
+            // explicit part: grammar ODEs + tau (+ the FEM term when it is not implicit)
+            // implicit part: the stiff FEM term, when the operator supports it
+            arkode_mem = ARKStepCreate(rhs_exp, use_imex ? rhs_imp : NULL, t_start, y, ctx);
 
-            flag = ERKStepSStolerances(arkode_mem, reltol, abstol);
+            reltol = 1.0e-6;
+            abstol = 1.0e-8;
+
+            flag = ARKStepSStolerances(arkode_mem, reltol, abstol);
 
             //set optional inputs
-            flag = ERKStepSetUserData(arkode_mem, &user_data);
+            flag = ARKStepSetUserData(arkode_mem, &user_data);
 
             // specify the root finding function having num_roots
-            flag = ERKStepRootInit(arkode_mem, num_roots, root_func);
+            flag = ARKStepRootInit(arkode_mem, num_roots, root_func);
 
-            ERKStepSetMaxStep(arkode_mem, dt_out);
-            ERKStepSetMaxNumSteps(arkode_mem, 50000);  // allow many small steps for stiff transients
+            ARKStepSetMaxStep(arkode_mem, dt_out);
+            ARKStepSetMaxNumSteps(arkode_mem, 50000);  // allow many small steps for stiff transients
+            attach_linear_solver();
 //            std::cout << "Created solver\n";
             //set custom error handler for the solver
 
 
             // TODO: Comment back in 
-            // ERKStepSetErrHandlerFn(arkode_mem, customErrHandler, NULL);
+            // ARKStepSetErrHandlerFn(arkode_mem, customErrHandler, NULL);
+        }
+
+        // (Re)create the matrix-free GMRES solver for the implicit FEM term and attach it
+        void attach_linear_solver()
+        {
+            if constexpr (imex_capable) {
+                if (!use_imex) return;
+                SUNLinearSolver newLS = SUNLinSol_SPGMR(y, SUN_PREC_LEFT, 20, ctx);
+                ARKStepSetLinearSolver(arkode_mem, newLS, NULL);   // NULL matrix: matrix-free
+                ARKStepSetJacTimes(arkode_mem, NULL, jac_times);
+                ARKStepSetPreconditioner(arkode_mem, prec_setup, prec_solve);
+                ARKStepSetLinear(arkode_mem, 0);                   // implicit term is linear in y
+                ARKStepSetEpsLin(arkode_mem, 1.0e-3);              // tight linear solves
+                // fi(z) is not re-evaluated at the stage solutions: its stiff part would
+                // amplify the linear-solve error (grid-scale noise); deduce it from the stage instead
+                ARKStepSetDeduceImplicitRhs(arkode_mem, SUNTRUE);
+                if (LS) SUNLinSolFree(LS);
+                LS = newLS;
+            }
+        }
+
+        // Restart the integrator from the current (t, y)
+        void reinit_integrator()
+        {
+            ARKStepReInit(arkode_mem, rhs_exp, use_imex ? rhs_imp : NULL, t, y);
+        }
+
+        long int num_steps_taken() const
+        {
+            long int n = 0;
+            ARKStepGetNumSteps(arkode_mem, &n);
+            return n;
+        }
+
+        long int num_rhs_evals() const
+        {
+            long int ne = 0, ni = 0;
+            ARKStepGetNumRhsEvals(arkode_mem, &ne, &ni);
+            return ne + ni;
         }
 
         // Advance the integrator one reporting step. An optional t_cap (physical
@@ -250,7 +372,7 @@ namespace DGGML {
             // Re-seed the integrator when the propensity changed.
             if(user_data.geocell_propensity != last_prop_seen)
             {
-                ERKStepReInit(arkode_mem, rhs, t, y);
+                reinit_integrator();
                 last_prop_seen = user_data.geocell_propensity;
             }
 
@@ -264,12 +386,12 @@ namespace DGGML {
 
             // Explicit Runga-Kutta Evolve to solve to the next output time (target)
             // Step to the target time value
-            flag = ERKStepEvolve(arkode_mem, target, y, &t, ARK_NORMAL);
+            flag = ARKStepEvolve(arkode_mem, target, y, &t, ARK_NORMAL);
             // std::cout << "t: " << t << ", tout: " << tout << " flag: " << flag << "\n";
             // Check if a root was found (i.e., if the tau ODE crossed the waiting time threshold)
             if(flag == ARK_ROOT_RETURN)
             {
-                root_flag = ERKStepGetRootInfo(arkode_mem, roots_found);
+                root_flag = ARKStepGetRootInfo(arkode_mem, roots_found);
             }
             // successful solve
             else if(flag >= 0)
@@ -283,22 +405,22 @@ namespace DGGML {
                 }
 
             } else {
-                std::cout << "Error in ERKStepEvolve: flag = " << flag << "\n";
+                std::cout << "Error in ARKStepEvolve: flag = " << flag << "\n";
 
                 // Solver statistics
                 long int nst, nst_a, nfe, netf;
-                ERKStepGetNumSteps(arkode_mem, &nst);
-                ERKStepGetNumStepAttempts(arkode_mem, &nst_a);
-                ERKStepGetNumRhsEvals(arkode_mem, &nfe);
-                ERKStepGetNumErrTestFails(arkode_mem, &netf);
+                ARKStepGetNumSteps(arkode_mem, &nst);
+                ARKStepGetNumStepAttempts(arkode_mem, &nst_a);
+                nfe = num_rhs_evals();
+                ARKStepGetNumErrTestFails(arkode_mem, &netf);
                 std::cout << "  Steps: " << nst << " (attempted: " << nst_a << ")\n";
                 std::cout << "  RHS evals: " << nfe << "\n";
                 std::cout << "  Error test failures: " << netf << "\n";
 
                 // Step sizes
                 realtype hcur, hlast;
-                ERKStepGetCurrentStep(arkode_mem, &hcur);
-                ERKStepGetLastStep(arkode_mem, &hlast);
+                ARKStepGetCurrentStep(arkode_mem, &hcur);
+                ARKStepGetLastStep(arkode_mem, &hlast);
                 std::cout << "  Current step size: " << hcur << "\n";
                 std::cout << "  Last step size: " << hlast << "\n";
 
@@ -345,13 +467,86 @@ namespace DGGML {
             return 0;
         }
 
+        // Full RHS (grammar ODEs + tau + FEM term); used for diagnostics and as the base of rhs_exp
         static int rhs(realtype t, N_Vector y, N_Vector ydot, void* user_data)
+        {
+            return rhs_body(t, y, ydot, user_data, true);
+        }
+
+        // Explicit part. The FEM term is evaluated here too so that grammar rules still see the
+        // FEM derivatives in ydot (rules may mirror them into graph variables), but when the FEM
+        // term is integrated implicitly its own segment is cleared before returning, so it is
+        // not counted twice.
+        static int rhs_exp(realtype t, N_Vector y, N_Vector ydot, void* user_data)
+        {
+            int ret = rhs_body(t, y, ydot, user_data, true);
+            if constexpr (imex_capable) {
+                UserDataType* p = (UserDataType *)user_data;
+                if (p->fem_op) {
+                    double* seg = N_VGetArrayPointer(ydot) + p->fem_op->fem_offset;
+                    std::fill(seg, seg + p->fem_op->ndofs, 0.0);
+                }
+            }
+            return ret;
+        }
+
+        // Implicit part: the (linear) FEM term only
+        static int rhs_imp(realtype t, N_Vector y, N_Vector ydot, void* user_data)
+        {
+            N_VConst(0.0, ydot);
+            if constexpr (imex_capable) {
+                UserDataType* p = (UserDataType *)user_data;
+                if (p->fem_op) p->fem_op->Mult(t, y, ydot);
+            }
+            return 0;
+        }
+
+        // Jv for the implicit term: it is linear, so J*v is the term applied to v
+        static int jac_times(N_Vector v, N_Vector Jv, realtype t, N_Vector y, N_Vector fy,
+                             void* user_data, N_Vector tmp)
+        {
+            return rhs_imp(t, v, Jv, user_data);
+        }
+
+        static int prec_setup(realtype t, N_Vector y, N_Vector fy, booleantype jok,
+                              booleantype* jcurPtr, realtype gamma, void* user_data)
+        {
+            if constexpr (imex_capable) {
+                UserDataType* p = (UserDataType *)user_data;
+                if (p->fem_op) p->fem_op->PrecSetup(gamma);
+            }
+            *jcurPtr = SUNTRUE;
+            return 0;
+        }
+
+        static int prec_solve(realtype t, N_Vector y, N_Vector fy, N_Vector r, N_Vector z,
+                              realtype gamma, realtype delta, int lr, void* user_data)
+        {
+            N_VScale(1.0, r, z);   // identity outside the FEM segment
+            if constexpr (imex_capable) {
+                UserDataType* p = (UserDataType *)user_data;
+                if (p->fem_op) {
+                    const int off = p->fem_op->fem_offset;
+                    p->fem_op->PrecSolve(N_VGetArrayPointer(r) + off, N_VGetArrayPointer(z) + off, gamma);
+                }
+            }
+            return 0;
+        }
+
+        static int rhs_body(realtype t, N_Vector y, N_Vector ydot, void* user_data, bool with_fem)
         {
             UserDataType* local_ptr = (UserDataType *)user_data;
             //fill ydot with zeros
             auto global_length = N_VGetLength(ydot);
             for(auto i = 0; i < global_length; i++)
                 NV_Ith_S(ydot, i) = 0.0;
+
+            // Spatial FEM PDE terms (if an FEM operator is attached); operates directly on
+            // the SUNDIALS array pointers at the operator's offset
+            if constexpr (!std::is_same_v<FemOperatorType, void*>) {
+                if (with_fem && local_ptr->fem_op)
+                    local_ptr->fem_op->Mult(t, y, ydot);
+            }
 
             // === ODE DIAGNOSTIC: print full system on first call with actual equations ===
             // Set ODE_DIAG_ENABLED=1 env var to enable
@@ -417,6 +612,30 @@ namespace DGGML {
             return 0;
         }
 
+        // Copy of the FEM segment of y, so it survives a rebuild of the state vector
+        std::vector<double> save_fem_state()
+        {
+            std::vector<double> saved;
+            if constexpr (!std::is_same_v<FemOperatorType, void*>) {
+                if (user_data.fem_op) {
+                    const double* src = N_VGetArrayPointer(y) + user_data.fem_op->fem_offset;
+                    saved.assign(src, src + user_data.fem_op->ndofs);
+                }
+            }
+            return saved;
+        }
+
+        // Place a saved FEM segment at its new offset (right after the grammar variables)
+        void restore_fem_state(const std::vector<double>& saved, std::size_t new_offset)
+        {
+            if constexpr (!std::is_same_v<FemOperatorType, void*>) {
+                if (user_data.fem_op) {
+                    user_data.fem_op->fem_offset = static_cast<int>(new_offset);
+                    std::copy(saved.begin(), saved.end(), N_VGetArrayPointer(y) + new_offset);
+                }
+            }
+        }
+
         void copy_back()
         {
             for(auto& [item, key] : user_data.varmap)
@@ -425,6 +644,12 @@ namespace DGGML {
             }
             auto global_length = N_VGetLength(y);
             user_data.tau = NV_Ith_S(y, global_length-1);
+
+            // Update FEM fields (e.g. GridFunction) from the SUNDIALS vector
+            if constexpr (!std::is_same_v<FemOperatorType, void*>) {
+                if (user_data.fem_op)
+                    user_data.fem_op->Sync(y);
+            }
         }
 
         // Refresh the continuous ODE state vector y from the CURRENT graph node
@@ -439,7 +664,7 @@ namespace DGGML {
             if(num_eq <= 1) return;   // no real ODE state variables to refresh
             for(auto& [ptr, idx] : user_data.varmap)
                 NV_Ith_S(y, idx) = *ptr;
-            ERKStepReInit(arkode_mem, rhs, t, y);
+            reinit_integrator();
             if(tout <= t)
             {
                 tout = t + dt_out;
@@ -451,9 +676,7 @@ namespace DGGML {
         //since it may change in size
         void reinit(std::vector<std::size_t> solving_rules, const typename RuleMatchType::container_type& rm_snapshot)
         {
-            long int nst, nfe_local;
-            ERKStepGetNumSteps(arkode_mem, &nst);
-            ERKStepGetNumRhsEvals(arkode_mem, &nfe_local);
+            long int nst = num_steps_taken(), nfe_local = num_rhs_evals();
             global_nstep += nst;
             global_nfe += nfe_local;
 
@@ -490,7 +713,7 @@ namespace DGGML {
                 ode.ic(user_data.model->system_graph, lhs_vertex_map, varset);
             }
 
-            num_eq = static_cast<sunindextype>(varset.size()) + 1;
+            num_eq = static_cast<sunindextype>(varset.size()) + fem_dofs() + 1;
 
             // NV_Ith_S(y, varset.size()) = user_data.tau;
             std::size_t idx = 0;
@@ -498,8 +721,10 @@ namespace DGGML {
             // std::cout << "Local length: " << N_VGetLocalLength(y) << "\n";
             // std::cout << "Varset length: " << varset.size() << "\n";
 
+            auto fem_saved = save_fem_state();
             N_VDestroy(y);
             y = N_VNew_Serial(num_eq, ctx);
+            N_VConst(0.0, y);
 
             for(auto item : varset)
             {
@@ -507,22 +732,23 @@ namespace DGGML {
                 NV_Ith_S(y, idx) = *item;
                 idx++;
             }
-
+            restore_fem_state(fem_saved, varset.size());
 
             user_data.tau = 0.0;
-            NV_Ith_S(y, varset.size()) = 0.0;
+            NV_Ith_S(y, num_eq - 1) = 0.0;
 
             varset.clear();
 
             if(num_eq == pre_eq)
-                ERKStepReInit(arkode_mem, rhs, t, y);
+                reinit_integrator();
             else
             {
-                ERKStepResize(arkode_mem, y, 1.0, t, NULL, NULL);
-                ERKStepReInit(arkode_mem, rhs, t, y);
+                ARKStepResize(arkode_mem, y, 1.0, t, NULL, NULL);
+                attach_linear_solver();
+                reinit_integrator();
             }
             // Ensure tout is ahead of t after reinit so the next
-            // ERKStepEvolve call has a valid forward target.
+            // ARKStepEvolve call has a valid forward target.
             if (tout <= t) {
                 tout = t + dt_out;
                 tout = (tout > t_final) ? t_final : tout;
@@ -534,9 +760,7 @@ namespace DGGML {
         //since it may change in size
         void reinit(std::vector<std::size_t> solving_rules)
         {
-            long int nst, nfe_local;
-            ERKStepGetNumSteps(arkode_mem, &nst);
-            ERKStepGetNumRhsEvals(arkode_mem, &nfe_local);
+            long int nst = num_steps_taken(), nfe_local = num_rhs_evals();
             global_nstep += nst;
             global_nfe += nfe_local;
             user_data.solving_rules = solving_rules;
@@ -571,7 +795,7 @@ namespace DGGML {
                 ode.ic(user_data.model->system_graph, lhs_vertex_map, varset);
             }
 
-            num_eq = static_cast<sunindextype>(varset.size()) + 1;
+            num_eq = static_cast<sunindextype>(varset.size()) + fem_dofs() + 1;
 
             // NV_Ith_S(y, varset.size()) = user_data.tau;
             std::size_t idx = 0;
@@ -579,8 +803,10 @@ namespace DGGML {
             // std::cout << "Local length: " << N_VGetLocalLength(y) << "\n";
             // std::cout << "Varset length: " << varset.size() << "\n";
 
+            auto fem_saved = save_fem_state();
             N_VDestroy(y);
             y = N_VNew_Serial(num_eq, ctx);
+            N_VConst(0.0, y);
 
             for(auto item : varset)
             {
@@ -588,22 +814,24 @@ namespace DGGML {
                 NV_Ith_S(y, idx) = *item;
                 idx++;
             }
+            restore_fem_state(fem_saved, varset.size());
 
 
             user_data.tau = 0.0;
-            NV_Ith_S(y, varset.size()) = 0.0;
+            NV_Ith_S(y, num_eq - 1) = 0.0;
 
             varset.clear();
 
             if(num_eq == pre_eq)
-                ERKStepReInit(arkode_mem, rhs, t, y);
+                reinit_integrator();
             else
             {
-                ERKStepResize(arkode_mem, y, 1.0, t, NULL, NULL);
-                ERKStepReInit(arkode_mem, rhs, t, y);
+                ARKStepResize(arkode_mem, y, 1.0, t, NULL, NULL);
+                attach_linear_solver();
+                reinit_integrator();
             }
             // Ensure tout is ahead of t after reinit so the next
-            // ERKStepEvolve call has a valid forward target.
+            // ARKStepEvolve call has a valid forward target.
             if (tout <= t) {
                 tout = t + dt_out;
                 tout = (tout > t_final) ? t_final : tout;
@@ -615,11 +843,11 @@ namespace DGGML {
         {
             long int nst, nst_a, nfe, netf;
             /* Print some final statistics */
-            flag = ERKStepGetNumSteps(arkode_mem, &nst);
+            flag = ARKStepGetNumSteps(arkode_mem, &nst);
             global_nstep += nst;
-            flag = ERKStepGetNumStepAttempts(arkode_mem, &nst_a);
-            flag = ERKStepGetNumRhsEvals(arkode_mem, &nfe);
-            flag = ERKStepGetNumErrTestFails(arkode_mem, &netf);
+            flag = ARKStepGetNumStepAttempts(arkode_mem, &nst_a);
+            nfe = num_rhs_evals();
+            flag = ARKStepGetNumErrTestFails(arkode_mem, &netf);
 
             printf("\nFinal Solver Statistics:\n");
             printf("   Internal solver steps = %li (attempted = %li)\n", nst, nst_a);
@@ -633,9 +861,14 @@ namespace DGGML {
             //std::cout << "Global length: " << N_VGetLength(y) << "\n";
             //std::cout << "Local length: " << N_VGetLocalLength(y) << "\n";
             //std::cout << "Varset length: " << user_data.varmap.size() << "\n";
+            if constexpr (!std::is_same_v<FemOperatorType, void*>) {
+                if (user_data.fem_op)
+                    user_data.fem_op->Sync(y);   // persist the field before y is destroyed
+            }
             N_VDestroy(y);
             //std::cout << "Destroyed y vector\n";
-            ERKStepFree(&arkode_mem); //free the solver memory
+            ARKStepFree(&arkode_mem); //free the solver memory
+            if (LS) SUNLinSolFree(LS);
             //std::cout << "Destroyed arkode_mem\n";
             SUNContext_Free(&ctx); //always call prior to MPI_Finalize
             //std::cout << "Destroyed the solver\n";

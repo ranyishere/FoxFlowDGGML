@@ -185,10 +185,13 @@ namespace DGGML
 
         // initialize the ODE solver
         auto _t_solver_init = std::chrono::high_resolution_clock::now();
+        // Optional spatial FEM operator (nullptr / void* unless the model opts in)
+        using fem_traits = fem_operator_traits<std::decay_t<decltype(*model)>>;
+        auto fem_op = fem_traits::get(*model, k, !solving_rules.empty());
         Solver ode_system(model, grammar_analysis, solving_rules,
                   rule_matches, local_rm,
                   local_cm,
-                  k, geocell_propensity, tau, exp_sample, num_eq);
+                  k, geocell_propensity, tau, exp_sample, num_eq, fem_op);
         timer_solver_init_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - _t_solver_init).count();
 
@@ -679,10 +682,8 @@ namespace DGGML
         if (ssa_inner_steps > 0) {
             auto timer_geocell_end = std::chrono::high_resolution_clock::now();
             double timer_total_ms = std::chrono::duration<double, std::milli>(timer_geocell_end - timer_geocell_start).count();
-            long int nst = 0, nfe_final = 0;
-            ERKStepGetNumSteps(ode_system.arkode_mem, &nst);
+            long int nst = ode_system.num_steps_taken(), nfe_final = ode_system.num_rhs_evals();
             nst += ode_system.global_nstep;
-            ERKStepGetNumRhsEvals(ode_system.arkode_mem, &nfe_final);
             std::size_t total_nfe = ode_system.global_nfe + nfe_final;
             double accounted = timer_solver_init_ms + timer_propensity_ms + timer_ode_step_ms
                              + timer_copy_back_ms + timer_event_select_ms + timer_rewrite_ms
