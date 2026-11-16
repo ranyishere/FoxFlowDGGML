@@ -8,9 +8,29 @@
 #include <memory>
 #include <mutex>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 namespace DGGML {
+
+    // A graph-driven FEM operator (e.g. a FoxFlow PDE solve rule) builds its mesh from the
+    // matches of its solving rule at every Solver construction, and addresses the state vector
+    // through the grammar variables (the field lives on the matched graph nodes). It declares
+    //
+    //     static constexpr bool graph_driven = true;
+    //     template <class Graph, class Matches, class VarMap>
+    //     bool Setup(Graph& graph, const Matches& rule_matches, const VarMap& varmap);
+    //
+    // `rule_matches` maps a rule name to the LHS-index -> graph-key map of each of its matches.
+    // Setup returns false when the operator has nothing to do for this solver (the solver then
+    // drops it). Such an operator has ndofs == 0 and no FEM segment in the state vector:
+    // Mult/PrecSolve index y/ydot/r/z with the varmap indices of the field variables.
+    template <typename T, typename = void>
+    struct fem_operator_is_graph_driven : std::false_type {};
+
+    template <typename T>
+    struct fem_operator_is_graph_driven<T, std::void_t<decltype(std::remove_pointer_t<T>::graph_driven)>>
+        : std::bool_constant<std::remove_pointer_t<T>::graph_driven> {};
 
     // Composite FEM operator: hosts several spatial operators (of possibly different types) in a
     // single geocell solver. The group satisfies the same contract as a single operator
@@ -32,8 +52,12 @@ namespace DGGML {
     template <typename... Ops>
     class FemOperatorGroup {
         static_assert(sizeof...(Ops) > 0, "FemOperatorGroup needs at least one operator");
+        static_assert((fem_operator_is_graph_driven<Ops>::value && ...) ||
+                      !(fem_operator_is_graph_driven<Ops>::value || ...),
+                      "FemOperatorGroup cannot mix graph-driven and segment-based operators");
 
     public:
+        static constexpr bool graph_driven = (fem_operator_is_graph_driven<Ops>::value && ...);
         int ndofs = 0;        // total dofs over all members
         int fem_offset = 0;   // set by the Solver; start of the group's segment in y
 
@@ -56,6 +80,16 @@ namespace DGGML {
         void Sync(N_Vector y)
         {
             for_each_member([&](auto& op) { op.Sync(y); });
+        }
+
+        // Graph-driven members only: every member sees all the rule matches; the group is
+        // active when at least one member is.
+        template <typename Graph, typename Matches, typename VarMap>
+        bool Setup(Graph& graph, const Matches& matches, const VarMap& varmap)
+        {
+            bool any = false;
+            std::apply([&](auto&... op) { ((any = op->Setup(graph, matches, varmap) || any), ...); }, ops);
+            return any;
         }
 
         // Access the I-th member, e.g. to read its persistent field.

@@ -84,6 +84,16 @@ namespace DGGML {
     //   Sync(y): copy the FEM segment of y back to the persistent field (copy_back and destructor).
     // The solver is rebuilt for every SSA window, so the field must live in the operator.
     // The state vector layout is [grammar vars | FEM dofs | tau]; the solver sets fem_offset.
+    //
+    // GRAPH-DRIVEN operators (static constexpr bool graph_driven = true, see FemOperatorGroup.hpp)
+    // work like an ODE solving rule instead: they have no FEM segment (ndofs == 0). Their solving
+    // rule's matches select the graph nodes of the mesh elements, `ic` puts the field variables
+    // into the grammar variables, and the solver calls
+    //     bool Setup(graph, rule_matches, varmap)
+    // (after the variable map is built, before Load) so the operator can build its mesh from the
+    // matches and map its dofs to state indices. The operator addresses y/ydot (and r/z in
+    // PrecSolve) directly with those indices; fem_offset stays 0. Their implicit term is evaluated
+    // only in the implicit part of the IMEX split.
     // To host several operators in one solver, wrap them in DGGML::FemOperatorGroup<Op0, Op1, ...>
     // (see FemOperatorGroup.hpp): the group is itself a single operator whose segment is the
     // concatenation of its members' segments.
@@ -99,6 +109,7 @@ namespace DGGML {
         SUNLinearSolver LS = nullptr;   // matrix-free GMRES for the implicit FEM term (if any)
 
         static constexpr bool imex_capable = fem_operator_is_implicit<FemOperatorType>::value;
+        static constexpr bool fem_graph_driven = fem_operator_is_graph_driven<FemOperatorType>::value;
         bool use_imex = false;          // FEM term integrated implicitly (imex_capable && operator attached)
 
         realtype t_start, t_final, t, tout, dt_out;
@@ -158,6 +169,28 @@ namespace DGGML {
                 if (user_data.fem_op) return static_cast<sunindextype>(user_data.fem_op->ndofs);
             }
             return 0;
+        }
+
+        // Graph-driven operators: hand the matches of the solving rules and the freshly built
+        // variable map to the operator, which builds its mesh from them (LHS-index -> graph-key
+        // map of every match, per rule name), then let it initialise y (e.g. held dofs).
+        // Must run after varmap and y are (re)built. An operator without elements is inactive.
+        void graph_fem_setup()
+        {
+            if constexpr (fem_graph_driven) {
+                if (user_data.fem_op) {
+                    std::map<std::string, std::vector<std::map<std::size_t, std::size_t>>> maps;
+                    for(auto& item : user_data.solving_rules)
+                    {
+                        auto& inst = user_data.rule_matches.at(item);
+                        std::map<std::size_t, std::size_t> lhs_vertex_map;
+                        construct_grammar_match_map(inst, user_data.grammar_analysis, lhs_vertex_map, user_data.component_matches);
+                        maps[std::string(inst.name)].push_back(std::move(lhs_vertex_map));
+                    }
+                    (void) user_data.fem_op->Setup(user_data.model->system_graph, maps, user_data.varmap);
+                    user_data.fem_op->Load(y);
+                }
+            }
         }
 
         //TODO: remember, the varset/varmap is only safe so long as the map doesn't change by another thread
@@ -225,8 +258,12 @@ namespace DGGML {
             // FEM segment sits right after the grammar variables; start from the operator's field
             if constexpr (!std::is_same_v<FemOperatorType, void*>) {
                 if (user_data.fem_op) {
-                    user_data.fem_op->fem_offset = static_cast<int>(idx);
-                    user_data.fem_op->Load(y);
+                    if constexpr (fem_graph_driven) {
+                        graph_fem_setup();
+                    } else {
+                        user_data.fem_op->fem_offset = static_cast<int>(idx);
+                        user_data.fem_op->Load(y);
+                    }
                 }
             }
 
@@ -334,6 +371,21 @@ namespace DGGML {
             }
         }
 
+        // Free and recreate the integrator for the current (t, y). ARKStepReInit/Resize
+        // leave internal work vectors sized to the first problem, so when num_eq grows
+        // arkInit/rhs write past them (heap corruption). Always rebuild from scratch.
+        void rebuild_integrator()
+        {
+            ARKStepFree(&arkode_mem);
+            arkode_mem = ARKStepCreate(rhs_exp, use_imex ? rhs_imp : NULL, t, y, ctx);
+            ARKStepSStolerances(arkode_mem, reltol, abstol);
+            ARKStepSetUserData(arkode_mem, &user_data);
+            ARKStepRootInit(arkode_mem, num_roots, root_func);
+            ARKStepSetMaxStep(arkode_mem, dt_out);
+            ARKStepSetMaxNumSteps(arkode_mem, 50000);
+            attach_linear_solver();
+        }
+
         // Restart the integrator from the current (t, y)
         void reinit_integrator()
         {
@@ -382,6 +434,21 @@ namespace DGGML {
             {
                 target = t_cap;
                 capped = true;
+            }
+
+            // ARKODE rejects a span shorter than ~2*uround*(|t|+|target|) with
+            // "tout too close to t0" (flag -27). An event landing (almost) exactly
+            // on the window end / EveryRule cap leaves such a sliver, so there is
+            // nothing left to integrate: snap to the target and treat it as reached.
+            if(target - t < RCONST(1e-9))
+            {
+                if(target > t) t = target;
+                if(!capped || t >= tout - RCONST(1e-12))
+                {
+                    tout += dt_out;
+                    tout = (tout > t_final) ? t_final : tout;
+                }
+                return;
             }
 
             // Explicit Runga-Kutta Evolve to solve to the next output time (target)
@@ -479,6 +546,12 @@ namespace DGGML {
         // not counted twice.
         static int rhs_exp(realtype t, N_Vector y, N_Vector ydot, void* user_data)
         {
+            if constexpr (fem_graph_driven) {
+                // The graph-driven FEM term acts on grammar variables: when it is implicit it is
+                // left out of the explicit part entirely (no segment to clear).
+                UserDataType* p = (UserDataType *)user_data;
+                return rhs_body(t, y, ydot, user_data, !(imex_capable && p->fem_op));
+            }
             int ret = rhs_body(t, y, ydot, user_data, true);
             if constexpr (imex_capable) {
                 UserDataType* p = (UserDataType *)user_data;
@@ -526,7 +599,7 @@ namespace DGGML {
             if constexpr (imex_capable) {
                 UserDataType* p = (UserDataType *)user_data;
                 if (p->fem_op) {
-                    const int off = p->fem_op->fem_offset;
+                    const int off = fem_graph_driven ? 0 : p->fem_op->fem_offset;
                     p->fem_op->PrecSolve(N_VGetArrayPointer(r) + off, N_VGetArrayPointer(z) + off, gamma);
                 }
             }
@@ -628,7 +701,7 @@ namespace DGGML {
         // Place a saved FEM segment at its new offset (right after the grammar variables)
         void restore_fem_state(const std::vector<double>& saved, std::size_t new_offset)
         {
-            if constexpr (!std::is_same_v<FemOperatorType, void*>) {
+            if constexpr (!std::is_same_v<FemOperatorType, void*> && !fem_graph_driven) {
                 if (user_data.fem_op) {
                     user_data.fem_op->fem_offset = static_cast<int>(new_offset);
                     std::copy(saved.begin(), saved.end(), N_VGetArrayPointer(y) + new_offset);
@@ -733,20 +806,14 @@ namespace DGGML {
                 idx++;
             }
             restore_fem_state(fem_saved, varset.size());
+            graph_fem_setup();
 
             user_data.tau = 0.0;
             NV_Ith_S(y, num_eq - 1) = 0.0;
 
             varset.clear();
 
-            if(num_eq == pre_eq)
-                reinit_integrator();
-            else
-            {
-                ARKStepResize(arkode_mem, y, 1.0, t, NULL, NULL);
-                attach_linear_solver();
-                reinit_integrator();
-            }
+            rebuild_integrator();
             // Ensure tout is ahead of t after reinit so the next
             // ARKStepEvolve call has a valid forward target.
             if (tout <= t) {
@@ -815,6 +882,7 @@ namespace DGGML {
                 idx++;
             }
             restore_fem_state(fem_saved, varset.size());
+            graph_fem_setup();
 
 
             user_data.tau = 0.0;
@@ -822,14 +890,7 @@ namespace DGGML {
 
             varset.clear();
 
-            if(num_eq == pre_eq)
-                reinit_integrator();
-            else
-            {
-                ARKStepResize(arkode_mem, y, 1.0, t, NULL, NULL);
-                attach_linear_solver();
-                reinit_integrator();
-            }
+            rebuild_integrator();
             // Ensure tout is ahead of t after reinit so the next
             // ARKStepEvolve call has a valid forward target.
             if (tout <= t) {
