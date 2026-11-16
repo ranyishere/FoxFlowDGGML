@@ -21,6 +21,7 @@
 #include "DGGML.h"
 
 #include "IncrementalUpdate.hpp" // For common structures
+#include "RuleTrace.hpp"
 #include <chrono>
 #include <iomanip>
 
@@ -292,7 +293,15 @@ namespace DGGML3D
 
         // --- Phase 3: grammar rule update (user callback) ---
         _t0 = std::chrono::high_resolution_clock::now();
+        const bool _tracing = DGGML::Trace::enabled(rname);
+        DGGML::Trace::Snapshot _trace_snap;
+        if (_tracing) {
+            auto _rg = YAGL::make_graph_read_guard(system_graph);
+            _trace_snap = DGGML::Trace::capture_before(rname, system_graph, lhs_match, lhs_vertex_map,
+                [&]() { return grammar_analysis.with_rules.at(rname).propensity(lhs_match, lhs_vertex_map); });
+        }
         grammar_analysis.with_rules.at(rname).update(lhs_match, lhs_match_copy, lhs_vertex_map, rhs_vertex_map);
+        if (_tracing) DGGML::Trace::write_after(_trace_snap, lhs_match_copy, changes);
         g_rewrite_timings.rule_update_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - _t0).count();
 
