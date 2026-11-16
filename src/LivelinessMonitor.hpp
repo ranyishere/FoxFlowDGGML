@@ -1,4 +1,5 @@
 #include "Listeners.hpp"
+#include "RuleTrace.hpp"
 #include "HelperStructs.hpp"
 #include "IncrementalUpdate.hpp"
 
@@ -277,6 +278,8 @@ namespace DGGML {
         }
 
         void notifyRuleFired(const std::string& rule_name) {
+
+            DGGML::Trace::set_step(this->simulation_steps, this->ssa_steps);
 
             if(rule_fire_listener)
                 rule_fire_listener->onRuleFired(this->simulation_steps,
