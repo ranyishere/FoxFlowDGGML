@@ -180,6 +180,15 @@ namespace DGGML { namespace Trace {
                 jnum(os, static_cast<double>(v));
             }
 #ifdef DGGML_TRACE_HAS_TORCH
+            else if constexpr (has_numel<T>::value && !std::is_same_v<T, torch::Tensor>) {
+                // Fixed-size array (TFArray<N>): elements read via operator[] const.
+                os << "[";
+                for (std::size_t i = 0; i < static_cast<std::size_t>(v.numel()); ++i) {
+                    if (i) os << ",";
+                    jnum(os, static_cast<double>(v[i]));
+                }
+                os << "]";
+            }
             else if constexpr (has_numel<T>::value) {
                 auto f = v.detach().to(torch::kFloat64).contiguous().flatten();
                 const double* p = f.template data_ptr<double>();
