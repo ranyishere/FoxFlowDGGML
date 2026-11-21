@@ -214,9 +214,10 @@ namespace DGGML {
                             auto t0 = std::chrono::high_resolution_clock::now();
                             auto& gp = geocell_properties_list[k];
                             if (!gp.invalidated_components.empty()) {
-                                for(auto& [nbr, _val] : model->geoplex2D.graph.getNodeSetRef())
+                                // rule_map has one entry per geocell; skip cells with no rule matches.
+                                for(auto& [nbr, nbr_rules] : rule_map)
                                 {
-                                    // if(nbr == k) continue;
+                                    if(nbr_rules.empty()) continue;
                                     std::vector<std::size_t> invalid_rids;
                                     std::vector<std::size_t> invalid_idxs;
                                     for(auto idx = 0; idx < rule_map[nbr].size(); idx++)
@@ -279,8 +280,12 @@ namespace DGGML {
                                 geocell_properties.rejected_rule_matches.clear();
                             }
 
-                            for(auto& [nbr, value] : model->geoplex2D.graph.getNodeSetRef())
+                            // rule_map has one entry per geocell; nothing to remove when no components
+                            // were invalidated, and cells with no rule matches can be skipped.
+                            for(auto& [nbr, nbr_rules] : rule_map)
                             {
+                                if(geocell_properties.invalidated_components.empty()) break;
+                                if(nbr_rules.empty()) continue;
                                 std::vector<std::size_t> invalid_rids;
                                 std::vector<std::size_t> invalid_idxs;
                                 for(auto idx = 0; idx < rule_map[nbr].size(); idx++)
@@ -635,9 +640,10 @@ namespace DGGML {
                             auto t0 = std::chrono::high_resolution_clock::now();
                             auto& gp = geocell_properties_list[k];
                             if (!gp.invalidated_components.empty()) {
-                                for(auto& [nbr, _val] : model->geoplex2D.graph.getNodeSetRef())
+                                // rule_map has one entry per geocell; skip cells with no rule matches.
+                                for(auto& [nbr, nbr_rules] : rule_map)
                                 {
-                                    // if(nbr == k) continue;
+                                    if(nbr_rules.empty()) continue;
                                     std::vector<std::size_t> invalid_rids;
                                     std::vector<std::size_t> invalid_idxs;
                                     for(auto idx = 0; idx < rule_map[nbr].size(); idx++)
@@ -705,8 +711,12 @@ namespace DGGML {
                             // are mapped to geocells based on an anchor component,
                             // but they can be invalidated by changes to any of their components,
                             // which may be located in neighboring geocells.
-                            for(auto& [nbr, value] : model->geoplex2D.graph.getNodeSetRef())
+                            // rule_map has one entry per geocell; nothing to remove when no components
+                            // were invalidated, and cells with no rule matches can be skipped.
+                            for(auto& [nbr, nbr_rules] : rule_map)
                             {
+                                if(geocell_properties.invalidated_components.empty()) break;
+                                if(nbr_rules.empty()) continue;
                                 std::vector<std::size_t> invalid_rids;
                                 std::vector<std::size_t> invalid_idxs;
                                 for(auto idx = 0; idx < rule_map[nbr].size(); idx++)
@@ -1228,8 +1238,12 @@ namespace DGGML {
                                 geocell_properties.rejected_rule_matches.clear();
                             }
 
-                            for(auto& [nbr, value] : model->geoplex2D.graph.getNodeSetRef())
+                            // rule_map has one entry per geocell; nothing to remove when no components
+                            // were invalidated, and cells with no rule matches can be skipped.
+                            for(auto& [nbr, nbr_rules] : rule_map)
                             {
+                                if(geocell_properties.invalidated_components.empty()) break;
+                                if(nbr_rules.empty()) continue;
                                 std::vector<std::size_t> invalid_rids;
                                 std::vector<std::size_t> invalid_idxs;
                                 for(auto idx = 0; idx < rule_map[nbr].size(); idx++)
