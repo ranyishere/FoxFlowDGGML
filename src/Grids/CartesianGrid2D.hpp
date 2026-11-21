@@ -58,6 +58,15 @@ class CartesianGrid2D : public CartesianGrid3D {
             return CartesianGrid3D::cardinalLatticeIndex(i, j, 0);
         } 
 
+        // 2D lattice point (x, y). Without this, the base-class 2-point overload
+        // (which returns (y, z) for 3D) is picked up for 2D lattice lookups.
+        void cardinalLatticeToPoint(double& xp, double& yp, const int cardinal) const {
+            int i, j, k;
+            ijkLatticeIndex(cardinal, i, j, k);
+            xp = _min_x + i*_dx;
+            yp = _min_y + j*_dy;
+        }
+
         int cardinallCellIndex(const int i, const int j) const {
             return CartesianGrid3D::cardinalCellIndex(i, j, 0);
         }
