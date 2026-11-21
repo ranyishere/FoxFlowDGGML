@@ -1,6 +1,7 @@
 #ifndef LISTENERS_HPP
 #define LISTENERS_HPP
 
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include "vtu11/vtu11.hpp"
@@ -8,6 +9,13 @@
 
 
 namespace DGGML {
+
+    // Listener output (PropensityListener.csv, RuleFireListener.csv, ..., cell_listener.txt) is on
+    // unless FOXFLOW_LISTENERS=0 (set by run(..., listeners = false)).
+    inline bool listeners_enabled() {
+        const char* e = std::getenv("FOXFLOW_LISTENERS");
+        return !(e && e[0] == '0');
+    }
 
     class Listener {
     public:

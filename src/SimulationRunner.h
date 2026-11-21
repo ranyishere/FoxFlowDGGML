@@ -145,8 +145,10 @@ namespace DGGML {
             cell_list.interaction_radius = model->settings.MAXIMAL_REACTION_RADIUS;
 
 
-            cell_listener = std::make_unique<DGGML::CellListListener<graph_type>>(cell_list.get());
-            cell_list->addListener(cell_listener.get());
+            if (DGGML::listeners_enabled()) {
+                cell_listener = std::make_unique<DGGML::CellListListener<graph_type>>(cell_list.get());
+                cell_list->addListener(cell_listener.get());
+            }
 
             liveliness_monitor = std::make_unique<LivelinessMonitor>();
             model->set_liveliness_monitor(liveliness_monitor);
@@ -546,8 +548,10 @@ namespace DGGML {
             // cell_list->interaction_radius = model->settings.MAXIMAL_REACTION_RADIUS;
 
 
-            cell_listener = std::make_unique<DGGML::CellListListener<graph_type>>(cell_list.get());
-            cell_list->addListener(cell_listener.get());
+            if (DGGML::listeners_enabled()) {
+                cell_listener = std::make_unique<DGGML::CellListListener<graph_type>>(cell_list.get());
+                cell_list->addListener(cell_listener.get());
+            }
 
             liveliness_monitor = std::make_unique<LivelinessMonitor>();
             model->set_liveliness_monitor(liveliness_monitor);
@@ -967,8 +971,10 @@ namespace DGGML {
                                             &component_matches, this->is_3D);
 
 
-            cell_listener = std::make_unique<DGGML::CellListListener<graph_type>>(cell_list.get());
-            cell_list->addListener(cell_listener.get());
+            if (DGGML::listeners_enabled()) {
+                cell_listener = std::make_unique<DGGML::CellListListener<graph_type>>(cell_list.get());
+                cell_list->addListener(cell_listener.get());
+            }
 
             liveliness_monitor = std::make_unique<LivelinessMonitor>();
             model->set_liveliness_monitor(liveliness_monitor);

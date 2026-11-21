@@ -15,6 +15,11 @@ class CartesianGrid2D : public CartesianGrid3D {
     public:
         CartesianGrid2D() : CartesianGrid3D() {}
 
+        // Keep the 3D overloads visible: the 2D overloads below would otherwise hide them
+        // (code shared with the 3D model calls locatePoint/cardinalCellIndex with k/z args).
+        using CartesianGrid3D::locatePoint;
+        using CartesianGrid3D::cardinalCellIndex;
+
         // Specialized 2D Init: Forces Z to be a flat slice
         void init(const double min_x, const double min_y,
                   const double max_x, const double max_y,

@@ -240,6 +240,7 @@ namespace DGGML {
         int simulation_steps = 0;
 
         LivelinessMonitor() {
+            if (!listeners_enabled()) return;   // run(..., listeners = false)
             // Creating listeners
             PropensityListener* p_listener = new PropensityListener();
             RuleFireListener* rf_listener = new RuleFireListener();
